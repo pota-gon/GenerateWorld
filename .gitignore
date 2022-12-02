@@ -1,0 +1,6 @@
+js/plugins/*
+!js/plugins/Map
+js/plugins/Map/*.js
+!js/plugins/Map/GenerateWorld.js
+
+/save/
