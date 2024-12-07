@@ -1,6 +1,6 @@
 /*:
 @plugindesc
-ワールド自動生成 Ver0.5.8(2024/6/12)
+ワールド自動生成 Ver0.6.3(2024/11/26)
 
 @url https://raw.githubusercontent.com/pota-gon/RPGMakerMZ/main/plugins/Map/GenerateWorld.js
 @orderAfter wasdKeyMZ
@@ -9,6 +9,33 @@
 @author ポテトードラゴン
 
 ・アップデート情報
+* Ver0.6.3
+- シード周りの不具合解消
+- シード値ごとの配列作成処理を高速化
+- シード値ごとの配列をキャッシュするように変更
+* Ver0.6.2
+- 通行不能な位置にイベントが表示されるバグ修正
+- タイル完全固定リージョンを追加
+- リージョン系の設定を 0 で無効にできるように変更
+- RateMap イベントにリージョンを指定したとき該当のリージョンがない場合、イベントを削除するように変更
+- RateMap イベントの配置条件を上下左右通行可能から、上下左右の何れかが通行可能な場合に変更
+- リージョンを指定した場合、リージョンを指定していないイベントと同じ位置にイベントが重なるバグ修正
+- リージョンを指定したイベントも通行可能判定を実施するように変更
+* Ver0.6.1
+- プラグインコマンド(マップ情報初期化)を追加
+- プラグインパラメータ: タイル連番リージョン(StartTileRegion)追加
+- シード番号をデバッグログに表示する機能追加
+- シード番号が正しく処理されないバグ修正
+- RateMap イベントで表示できる場所がないときに TypeError Cannot read properties of undefined が発生するバグ修正
+- リージョン系プラグインパラメータを 1 ～ 255 までで制限するように修正
+- マップJSON出力で、元々のリージョンを出力できるオプションを追加
+- リファクタリング
+* Ver0.6.0
+- 船から降りるとき特定条件下でエラーになるバグ修正
+* Ver0.5.9
+- プラグインパラメータに上層OR下層タイルリージョンを追加
+- 浅瀬などの通行不可のタイルに船が呼び出せるバグ修正
+- リファクタリング
 * Ver0.5.8
 - マップJSON出力(同一マップ出力)すると、二回目以降の自動生成が出来なくなるバグ修正
 - ワールド再生成: ワールド再生成してから、ワールド自動生成のマップに移動するとマップがおかしくなるバグ修正
@@ -123,7 +150,64 @@ https://github.com/pota-gon/GenerateWorld
 @type number
 @text タイル固定リージョン
 @desc タイルを固定するリージョン
+0 でリージョンは設定されなくなります
 @default 1
+@min 0
+@max 255
+
+@param TwoChoiceRegion
+@type number
+@text 上層OR下層タイルリージョン
+@desc 上層を含むタイルか下層タイルのみのどちらかが出現するリージョン
+0 でリージョンは設定されなくなります
+@default 2
+@min 0
+@max 255
+
+@param ExceptRegion
+@type number
+@text 上層タイル除外リージョン
+@desc 上層タイルを除外するリージョン
+※ TODOにあったやつ。作る意味がよく分からない。
+@default 3
+@min 0
+@max 255
+
+@param PassableRegion
+@type number
+@text 通行可能リージョン
+@desc 通行可能なタイルのみ出現するリージョン
+※ 未実装
+@default 4
+@min 0
+@max 255
+
+@param ImpassableRegion
+@type number
+@text 通行不能リージョン
+@desc 通行不能なタイルのみ出現するリージョン
+※ 未実装
+@default 5
+@min 0
+@max 255
+
+@param LockTileRegion
+@type number
+@text タイル完全固定リージョン
+@desc タイルをリージョンを含め固定するリージョン
+0 でリージョンは設定されなくなります
+@default 6
+@min 0
+@max 255
+
+@param StartTileRegion
+@type number
+@text タイル連番リージョン
+@desc タイルに指定する連番リージョン
+0 でリージョンは設定されなくなります
+@default 8
+@min 0
+@max 255
 
 @param Tilesets
 @type struct<Tilesets>[]
@@ -198,6 +282,16 @@ https://github.com/pota-gon/GenerateWorld
         @text 同一マップJSON出力
         @desc 同一マップにJSONを出力するか
         出力しない場合、新規マップとして出力されます
+        @on 出力する
+        @off 出力しない
+        @default false
+
+        @param ExportOrgRegion
+        @parent ExportJsonCommand
+        @type boolean
+        @text 元リージョン出力
+        @desc 元リージョンをJSONに出力するか
+        出力しない場合、自動生成のリージョンが出力
         @on 出力する
         @off 出力しない
         @default false
@@ -580,6 +674,15 @@ https://github.com/pota-gon/GenerateWorld
     @off 出力しない
     @default false
 
+    @arg export_org_region
+    @type boolean
+    @text 元リージョン出力
+    @desc 元リージョンをJSONに出力するか
+    出力しない場合、自動生成のリージョンが出力
+    @on 出力する
+    @off 出力しない
+    @default false
+
     @arg event_export
     @type boolean
     @text イベント出力
@@ -596,6 +699,10 @@ https://github.com/pota-gon/GenerateWorld
     @on バックアップする
     @off バックアップしない
     @default true
+
+@command InitMap
+@text マップ情報初期化
+@desc ワールド自動生成で作成したマップ情報を初期化します。
 */
 
 
@@ -703,19 +810,6 @@ https://github.com/pota-gon/GenerateWorld
         4256: {'top_tile' : [[3200, 0, 1, 0], [4256, 0, 1, 1]], 'bottom_tile' : [[3200, 0, -1, 0]]}, // 丘（砂岩）
         4304: {'top_tile' : [[3968, 0, 1, 0], [4304, 0, 1, 1]], 'bottom_tile' : [[3968, 0, -1, 0]]} // 丘（雪）
     };
-    let seed = [151,160,137,91,90,15,
-        131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
-        190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,
-        88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
-        77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
-        102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
-        135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,
-        5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
-        223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,
-        129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,
-        251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,
-        49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,
-        138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180];
     let tileIds        = [];
     let aroundTileIds  = [];
     let distantTileIds = [];
@@ -733,7 +827,7 @@ https://github.com/pota-gon/GenerateWorld
             this.s = seed;
         }
         xorshift(min = 0, max = 254) {
-            let t = this.w ^ (this.w << 11);
+            let t  = this.w ^ (this.w << 11);
             this.w = this.h;
             this.h = this.t;
             this.t = this.s;
@@ -788,6 +882,9 @@ https://github.com/pota-gon/GenerateWorld
             }
         }
         return false;
+    }
+    function Potadra_random(probability, rate = 1) {
+        return Math.random() <= probability / 100 * rate;
     }
     function Potadra_numberArray(data) {
         const arr = [];
@@ -1208,11 +1305,11 @@ https://github.com/pota-gon/GenerateWorld
     }
     function PotadraSpawn_isPassable(x, y, and_flg = false) {
         if (and_flg) {
-            return $gameMap.isPassable(x, y, PotadraDirection_UNDER()) && $gameMap.isPassable(x, y, PotadraDirection_LEFT()) &&
-                   $gameMap.isPassable(x, y, PotadraDirection_RIGHT()) && $gameMap.isPassable(x, y, PotadraDirection_UP());
+            return $gamePlayer.isMapPassable(x, y, PotadraDirection_UNDER()) && $gamePlayer.isMapPassable(x, y, PotadraDirection_LEFT()) &&
+                   $gamePlayer.isMapPassable(x, y, PotadraDirection_RIGHT()) && $gamePlayer.isMapPassable(x, y, PotadraDirection_UP());
         } else {
-            return $gameMap.isPassable(x, y, PotadraDirection_UNDER()) || $gameMap.isPassable(x, y, PotadraDirection_LEFT()) ||
-                   $gameMap.isPassable(x, y, PotadraDirection_RIGHT()) || $gameMap.isPassable(x, y, PotadraDirection_UP());
+            return $gamePlayer.isMapPassable(x, y, PotadraDirection_UNDER()) || $gamePlayer.isMapPassable(x, y, PotadraDirection_LEFT()) ||
+                   $gamePlayer.isMapPassable(x, y, PotadraDirection_RIGHT()) || $gamePlayer.isMapPassable(x, y, PotadraDirection_UP());
         }
     }
     function PotadraSpawn_setPositionVehicle(current_x, current_y, min_x = 0, min_y = 0, max_x = $dataMap.width, max_y = $dataMap.height) {
@@ -1224,13 +1321,7 @@ https://github.com/pota-gon/GenerateWorld
     function PotadraSpawn_check(x, y, d) {
         const x2 = $gameMap.roundXWithDirection(x, d);
         const y2 = $gameMap.roundYWithDirection(y, d);
-        if (!$gameMap.isValid(x2, y2)) {
-            return false;
-        }
-        if (!$gameMap.isPassable(x2, y2, $gamePlayer.reverseDir(d))) {
-            return false;
-        }
-        if ($gamePlayer.isCollidedWithCharacters(x2, y2)) {
+        if (!$gameMap.isValid(x2, y2) || !$gameMap.isPassable(x2, y2, $gamePlayer.reverseDir(d)) || $gamePlayer.isCollidedWithCharacters(x2, y2)) {
             return false;
         }
         return true;
@@ -1310,9 +1401,16 @@ https://github.com/pota-gon/GenerateWorld
     const RetentionSaveData = Potadra_convertBool(params.RetentionSaveData);
     const SeedVariable      = Number(params.SeedVariable) || 0;
     const TileRegion        = Number(params.TileRegion) || 1;
+    const TwoChoiceRegion   = Number(params.TwoChoiceRegion || 2);
+    const ExceptRegion      = Number(params.ExceptRegion) || 3;
+    const PassableRegion    = Number(params.PassableRegion) || 4;
+    const ImpassableRegion  = Number(params.ImpassableRegion) || 5;
+    const LockTileRegion    = Number(params.LockTileRegion) || 6;
+    const StartTileRegion   = Number(params.StartTileRegion) || 7;
     const RegenerateCommand = String(params.RegenerateCommand);
     const ExportJsonCommand = String(params.ExportJsonCommand);
     const SameMapExportJson = Potadra_convertBool(params.SameMapExportJson);
+    const ExportOrgRegion   = Potadra_convertBool(params.ExportOrgRegion);
     const BackupJson        = Potadra_convertBool(params.BackupJson);
     const EventExport       = Potadra_convertBool(params.EventExport);
     const CommandKey        = Potadra_convertBool(params.CommandKey);
@@ -1355,18 +1453,9 @@ https://github.com/pota-gon/GenerateWorld
      */
     const _Spriteset_Map_createTilemap = Spriteset_Map.prototype.createTilemap;
     Spriteset_Map.prototype.createTilemap = function() {
-        let s;
-        if (Potadra_checkVariable(SeedVariable)) {
-            s = $gameVariables.value(SeedVariable);
-        } else {
-            s = Math.floor( Math.random() * (99999999 - (-99999999)) ) - 99999999;
-        }
         if (isGenerateWorld()) {
-            if (RetentionSaveData) {
-                if (!$gameMap._potadra_auto) GenerateWorld(s);
-            } else {
-                if (!$gameTemp._potadra_auto) GenerateWorld(s);
-            }
+            const value = RetentionSaveData ? !$gameMap._potadra_auto : !$gameTemp._potadra_auto;
+            if (value) GenerateWorld();
             PotadraSpawn_spawn(0, true);
         }
         _Spriteset_Map_createTilemap.apply(this, arguments);
@@ -1384,11 +1473,7 @@ https://github.com/pota-gon/GenerateWorld
     const _Game_Map_data = Game_Map.prototype.data;
     Game_Map.prototype.data = function() {
         if (isGenerateWorld()) {
-            if (RetentionSaveData) {
-                return this._potadra_worlds;
-            } else {
-                return $gameTemp._potadra_worlds;
-            }
+            return RetentionSaveData ? this._potadra_worlds : $gameTemp._potadra_worlds;
         }
         return _Game_Map_data.apply(this, arguments);
     };
@@ -1454,25 +1539,16 @@ https://github.com/pota-gon/GenerateWorld
                 return false;
             }
             // ワールド自動生成時のみ、すり抜けONのイベントは着陸出来るように変更
-            if (isGenerateWorld()) {
-                if ($gameMap.eventsXyNt(x, y).length > 0) {
-                    return false;
-                }
-            } else {
-                if ($gameMap.eventsXy(x, y).length > 0) {
-                    return false;
-                }
+            const events = isGenerateWorld() ? $gameMap.eventsXyNt(x, y) : $gameMap.eventsXy(x, y);
+            if (events.length > 0) {
+                return false;
             }
         } else {
             const x2 = $gameMap.roundXWithDirection(x, d);
             const y2 = $gameMap.roundYWithDirection(y, d);
-            if (!$gameMap.isValid(x2, y2)) {
-                return false;
-            }
-            if (!$gameMap.isPassable(x2, y2, this.reverseDir(d))) {
-                return false;
-            }
-            if (this.isCollidedWithCharacters(x2, y2)) {
+            if (!$gameMap.isValid(x2, y2) || 
+                !$gameMap.isPassable(x2, y2, this.reverseDir(d)) || 
+                this.isCollidedWithCharacters(x2, y2)) {
                 return false;
             }
         }
@@ -1501,29 +1577,42 @@ https://github.com/pota-gon/GenerateWorld
     // プラグインコマンド(マップJSON出力)
     PluginManager.registerCommand(plugin_name, "ExportMapJson", args => {
         same_map_export_json = Potadra_convertBool(args.same_map_export_json);
-        event_export = Potadra_convertBool(args.event_export);
-        backup_json = Potadra_convertBool(args.backup_json);
-        JsonExport(same_map_export_json, event_export, backup_json);
+        export_org_region    = Potadra_convertBool(args.export_org_region);
+        event_export         = Potadra_convertBool(args.event_export);
+        backup_json          = Potadra_convertBool(args.backup_json);
+        JsonExport(same_map_export_json, export_org_region, event_export, backup_json);
+    });
+
+    // プラグインコマンド(マップ情報初期化)
+    PluginManager.registerCommand(plugin_name, "InitMap", args => {
+        if (RetentionSaveData) {
+            $gameMap._potadra_worlds = [];
+            $gameMap._potadra_auto = false;
+        } else {
+            $gameTemp._potadra_worlds = [];
+            $gameTemp._potadra_auto = false;
+        }
+        if (Potadra_checkVariable(SeedVariable)) {
+            $gameVariables.setValue(SeedVariable, 0);
+        }
     });
 
     //==============================================================================
     // ワールド自動生成
     //==============================================================================
-    function GenerateWorld(s = Math.floor( Math.random() * (99999999 - (-99999999)) ) - 99999999) {
+    function GenerateWorld() {
         if (_Game_Map_tileId.call(this, 0, 0, 0) === 0) return false;
 
         let firstTime = Date.now(); // 開始時間
 
         // シードを変数に記憶
-        if (Potadra_checkVariable(SeedVariable)) {
-            $gameVariables.setValue(SeedVariable, s);
-        }
+        const s = setSeed();
 
         // 乱数設定(Xorshift)
-        const random = new PotadraXorShift($dataSystem.advanced.screenWidth, $dataSystem.advanced.screenHeight, $dataSystem.tileSize, s);
-        let p = new Array(255);
-        for(let i = 0; i < 256; i++) p[i] = seed.splice(random.xorshift(), 1)[0];
-        seed = Array.from(new Set(p.filter(Boolean).concat(seed)));
+        if ($gameTemp._seed !== s) {
+            $gameTemp._seedArray = shuffle(s);
+            $gameTemp._seed = s;
+        }
 
         showTime(firstTime, 'シード設定');
 
@@ -1535,11 +1624,8 @@ https://github.com/pota-gon/GenerateWorld
         showTime(startTime, 'バイオーム判定');
 
         // ワールド自動生成マップかどうかの判定
-        if (RetentionSaveData) {
-            $gameMap._potadra_auto = $gameMap.mapId();
-        } else {
-            $gameTemp._potadra_auto = $gameMap.mapId();
-        }
+        const value = RetentionSaveData ? $gameMap : $gameTemp;
+        value._potadra_auto = $gameMap.mapId();
 
         // 地形の整形
         startTime = Date.now(); // 開始時間
@@ -1560,18 +1646,59 @@ https://github.com/pota-gon/GenerateWorld
     }
 
     //==============================================================================
+    // シード設定
+    //==============================================================================
+
+    // シードを変数に記憶
+    function setSeed() {
+        let s;
+        if (Potadra_checkVariable(SeedVariable) && $gameVariables.value(SeedVariable) !== 0) {
+            s = $gameVariables.value(SeedVariable);
+        } else {
+            s = Math.floor(Math.random() * (99999999 - (-99999999) + 1)) - 99999999;
+            $gameVariables.setValue(SeedVariable, s);
+        }
+        console.debug("シード番号:" + s);
+        return s;
+    }
+
+    // 0-255のシード配列をシャッフル
+    function shuffle(s) {
+        const random = new PotadraXorShift($dataSystem.advanced.screenWidth, $dataSystem.advanced.screenHeight, $dataSystem.tileSize, s);
+        let array = [];
+        let start = 0;
+        for(let i = 0; i < 256; i++) {
+            let s = random.xorshift();
+            let r = s % 256; // 0 - 255 の値
+            if (array.includes(r)) {
+                for(let j = start; j < 256; j++) {
+                    if (!array.includes(j)) {
+                        array.push(r);
+                        start = r;
+                        break;
+                    }
+                }
+            } else {
+                array.push(r);
+            }
+        }
+        return array;
+    }
+
+    //==============================================================================
     // イベントの設定
     //==============================================================================
     function setEvents() {
-        const ng_positions         = [];
-        const positions            = [];
+        const ng_positions         = []; // RateMap イベント以外の座標
+        // const positions            = [];
         const passable_positions   = [];
-        const unpassable_positions = [];
+        // const unpassable_positions = [];
         const regions              = {};
+        const events               = $gameMap.events();
 
         // RateMap イベント以外
-        for (const event of $gameMap.events()) {
-            const meta = event.event().meta;
+        for (const event of events) {
+            const meta       = event.event().meta;
             const meta_value = Potadra_meta(meta, 'RateMap');
             if (!meta_value && !event.isThrough()) {
                 ng_positions.push({x: event.event().x, y: event.event().y});
@@ -1585,42 +1712,49 @@ https://github.com/pota-gon/GenerateWorld
                     continue;
                 }
 
-                if (PotadraSpawn_isPassable(x, y, true)) {
-                    passable_positions.push({x: x, y: y});
-                } else {
-                    unpassable_positions.push({x: x, y: y});
-                }
-                positions.push({x: x, y: y});
-
                 const region = $gameMap.tileId(x, y, 5);
                 if (!regions[region]) regions[region] = [];
-                regions[region].push({x: x, y: y});
+
+                if ($gameMap.isBoatPassable(x, y) || $gameMap.isShipPassable(x, y)) { // 小型船と大型船は、リージョン指定時のみ配置
+                    regions[region].push({x: x, y: y});
+                } else if (PotadraSpawn_isPassable(x, y)) { // 上下左右のどこかが通行可能な場所
+                    passable_positions.push({x: x, y: y});
+                    regions[region].push({x: x, y: y});
+
+                } else {
+                    // unpassable_positions.push({x: x, y: y});
+                }
+                // positions.push({x: x, y: y});
             }
         }
 
         // RateMap イベント
-        for (const event of $gameMap.events()) {
-            const meta = event.event().meta;
+        for (const event of events) {
+            const meta       = event.event().meta;
             const meta_value = Potadra_meta(meta, 'RateMap');
             if (meta_value) {
                 // RateMap イベント
                 let probability = Number(meta_value) || 0;
-                if (Math.random() < probability) {
+                const passable_positions_length = passable_positions.length;
+                if (passable_positions_length > 0 && Math.random() < probability) {
                     // 表示対象
                     const region_value = Potadra_meta(meta, 'Region');
                     if (region_value) {
                         const region = Number(region_value);
                         if (region > 0) {
                             const r = regions[region];
-                            if (r) {
+                            if (r && r.length > 0) {
                                 const rand = Math.floor(Math.random() * r.length);
                                 event.locate(r[rand].x, r[rand].y);
                                 r.splice(rand, 1);
-                                continue;
+                                passable_positions.splice(rand, 1);
+                            } else { // リージョンの地形が存在しない場合、イベントを削除する
+                                $gameMap.eraseEvent(event._eventId);
                             }
+                            continue;
                         }
                     }
-                    const rand = Math.floor(Math.random() * passable_positions.length);
+                    const rand = Math.floor(Math.random() * passable_positions_length);
                     event.locate(passable_positions[rand].x, passable_positions[rand].y);
                     passable_positions.splice(rand, 1);
                 } else {
@@ -1637,9 +1771,7 @@ https://github.com/pota-gon/GenerateWorld
     function MiniatureTileId(x, y, z = 0) {
         let tileId = _Game_Map_tileId.call(this, x, y, z);
         const autotileType = tileId >= Tilemap.TILE_ID_A1 ? Math.floor((tileId - Tilemap.TILE_ID_A1) % 48) : -1;
-        if (autotileType > 0) {
-            tileId -= autotileType;
-        }
+        if (autotileType > 0) tileId -= autotileType;
         return tileId;
     }
 
@@ -1647,9 +1779,7 @@ https://github.com/pota-gon/GenerateWorld
         let tmp_x;
         for (tmp_x = 0; tmp_x < $dataMap.width; tmp_x++) {
             const tmp_tile_id = _Game_Map_tileId.call(this, tmp_x, 0, 0);
-            if (tmp_tile_id === 0) {
-                break;
-            }
+            if (tmp_tile_id === 0) break;
         }
         return $dataMap.width / tmp_x;
     }
@@ -1677,15 +1807,15 @@ https://github.com/pota-gon/GenerateWorld
             for (let y = 0; y < max_j; y++) {
                 const region  = _Game_Map_tileId.call(this, x, y, 5);
                 const layer_2 = _Game_Map_tileId.call(this, x, y, 1);
-                if (region === TileRegion) {
+                if ((TileRegion !== 0 && region === TileRegion) || (TwoChoiceRegion !== 0 && region === TwoChoiceRegion)) {
                     layer1[x][y] = MiniatureTileId(x, y);
                     layer2[x][y] = MiniatureTileId(x, y, 1);
                     layer3[x][y] = MiniatureTileId(x, y, 2);
                     layer4[x][y] = MiniatureTileId(x, y, 3);
                     layer5[x][y] = MiniatureTileId(x, y, 4);
                     tiles[x][y] = region;
-                } else if (region > 0) {
-                    tiles[x][y] = region;
+                // } else if (region > 0) {
+                //      tiles[x][y] = region;
                 } else if (layer_2 > 0) {
                     tiles[x][y] = MiniatureTileId(x, y, 1);
                 } else {
@@ -1710,20 +1840,36 @@ https://github.com/pota-gon/GenerateWorld
             for (let j = 0; j < max_j; j++) {
                 const start_x = i * BiomeSize;
                 const start_y = j * BiomeSize;
-                let end_x = start_x + BiomeSize;
-                let end_y = start_y + BiomeSize;
-                if (end_x > $dataMap.width) end_x = $dataMap.width;
-                if (end_y > $dataMap.height) end_y = $dataMap.height;
+                const end_x = Math.min(start_x + BiomeSize, $dataMap.width);
+                const end_y = Math.min(start_y + BiomeSize, $dataMap.height);
 
                 for (let x = start_x; x < end_x; x++) {
                     for (let y = start_y; y < end_y; y++) {
                         const tile = tiles[i][j];
-                        if (tile === TileRegion) { // 固定
+                        if (TileRegion !== 0 && tile === TileRegion) { // 固定
                             if (layer1[i][j] && layer1[i][j] !== 0) setTileId(x, y, 0, layer1[i][j]);
                             if (layer2[i][j] && layer2[i][j] !== 0) setTileId(x, y, 1, layer2[i][j]);
                             if (layer3[i][j] && layer3[i][j] !== 0) setTileId(x, y, 2, layer3[i][j]);
                             if (layer4[i][j] && layer4[i][j] !== 0) setTileId(x, y, 3, layer4[i][j]);
                             if (layer5[i][j] && layer5[i][j] !== 0) setTileId(x, y, 4, layer5[i][j]);
+                        } else if (TwoChoiceRegion !== 0 && tile === TwoChoiceRegion) { // 上層 OR 下層タイル リージョン
+                            if (Potadra_random(50)) { // 固定
+                                if (layer1[i][j] && layer1[i][j] !== 0) setTileId(x, y, 0, layer1[i][j]);
+                                if (layer2[i][j] && layer2[i][j] !== 0) setTileId(x, y, 1, layer2[i][j]);
+                                if (layer3[i][j] && layer3[i][j] !== 0) setTileId(x, y, 2, layer3[i][j]);
+                                if (layer4[i][j] && layer4[i][j] !== 0) setTileId(x, y, 3, layer4[i][j]);
+                                if (layer5[i][j] && layer5[i][j] !== 0) setTileId(x, y, 4, layer5[i][j]);
+                            } else { // 下層のみ
+                                if (layer1[i][j] && layer1[i][j] !== 0) setTileId(x, y, 0, layer1[i][j]);
+                                if (layer2[i][j] && layer2[i][j] !== 0) setTileId(x, y, 1, 0);
+                                if (layer3[i][j] && layer3[i][j] !== 0) setTileId(x, y, 2, 0);
+                                if (layer4[i][j] && layer4[i][j] !== 0) setTileId(x, y, 3, 0);
+                                if (layer5[i][j] && layer5[i][j] !== 0) setTileId(x, y, 4, 0);
+                            }
+                        } else if (ExceptRegion !== 0 && tile === ExceptRegion) { // 上層タイル除外
+                            createBiome(x, y, BIOME[tile], SEED_LENGTH, false);
+                        } else if (PassableRegion !== 0 && tile === PassableRegion) { // 通行可能タイルのみ
+                            createBiome(x, y, BIOME[tile], SEED_LENGTH, true, true);
                         } else if (BIOME[tile]) {
                             createBiome(x, y, BIOME[tile], SEED_LENGTH);
                         } else {
@@ -1743,7 +1889,7 @@ https://github.com/pota-gon/GenerateWorld
             for (let y = 0; y < $dataMap.height; y++) {
                 const layer1 = edgeTileId(x, y, 0, 2816);
                 const layer2 = edgeTileId(x, y, 1, 2096);
-                const value = PotadraPerlinNoise_my_noise(x, y, SEED_LENGTH, seed);
+                const value = PotadraPerlinNoise_my_noise(x, y, SEED_LENGTH, $gameTemp._seedArray);
 
                 // 山(岩) のとき
                 if (layer2 === 3872) {
@@ -1827,15 +1973,12 @@ https://github.com/pota-gon/GenerateWorld
      * @returns {} 
      */
     function getMapData(x, y, z) {
-        if (RetentionSaveData) {
-            return $gameMap._potadra_worlds[PotadraGenerate_index(x, y, z)];
-        } else {
-            return $gameTemp._potadra_worlds[PotadraGenerate_index(x, y, z)];
-        }
+        const data = RetentionSaveData ? $gameMap : $gameTemp;
+        return data._potadra_worlds[PotadraGenerate_index(x, y, z)];
     }
 
     /**
-     * 指定座標にあるタイル ID の取得
+     * 指定座標にあるタイル ID の取得(ワールド自動生成前のタイル)
      *
      * @param {number} x - X座標
      * @param {number} y - Y座標
@@ -1843,11 +1986,9 @@ https://github.com/pota-gon/GenerateWorld
      * @returns {number} タイル ID
      * @returns {} 
      */
-    function orgTileId(x, y, z) {
-        const width = $dataMap.width;
-        const height = $dataMap.height;
-        return $dataMap.data[(z * height + y) * width + x] || 0;
-    };
+    /*function orgTileId(x, y, z) {
+        return $dataMap.data[(z * $dataMap.height + y) * $dataMap.width + x] || 0;
+    };*/
 
     /**
      * 指定座標にあるタイル ID の設定
@@ -1859,28 +2000,8 @@ https://github.com/pota-gon/GenerateWorld
      */
     function setTileId(x, y, z, tileId) {
         const index = PotadraGenerate_index(x, y, z);
-        if (RetentionSaveData) {
-            $gameMap._potadra_worlds[index] = tileId;
-        } else {
-            $gameTemp._potadra_worlds[index] = tileId;
-        }
-    }
-
-    /**
-     * 指定座標にあるタイル ID の設定
-     *
-     * @param {number} x - X座標
-     * @param {number} y - Y座標
-     * @param {number} z - レイヤー
-     * @param {number} tileId - タイル ID
-     */
-    function setTileId(x, y, z, tileId) {
-        const index = PotadraGenerate_index(x, y, z);
-        if (RetentionSaveData) {
-            $gameMap._potadra_worlds[index] = tileId;
-        } else {
-            $gameTemp._potadra_worlds[index] = tileId;
-        }
+        const data  = RetentionSaveData ? $gameMap : $gameTemp;
+        data._potadra_worlds[index] = tileId;
     }
 
     /**
@@ -1929,11 +2050,7 @@ https://github.com/pota-gon/GenerateWorld
      * @returns {} 
      */
     function edgeTileId(x, y, z, tileID = 0) {
-        if (PotadraEdge_isEdge(x, y)) {
-            return loopTileId(x, y, z, tileID);
-        } else {
-            return randomTileId(x, y, z);
-        }
+        return PotadraEdge_isEdge(x, y) ? loopTileId(x, y, z, tileID) : randomTileId(x, y, z);
     }
 
     // 橋判定
@@ -1987,46 +2104,44 @@ https://github.com/pota-gon/GenerateWorld
     // 縦の判定
     function verticalLine(x, z, tileID, max_y = $dataMap.height) {
         for (let y = 0; y < max_y; y++) {
-            if (edgeTileId(x, y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, y, z, tileID) === tileID) return true;
         }
         return false;
     }
     // 横の判定
     function besideLine(y, z, tileID, max_x = $dataMap.width) {
         for (let x = 0; x < max_x; x++) {
-            if (edgeTileId(x, y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, y, z, tileID) === tileID) return true;
         }
         return false;
     }
 
-    function TopTile(value, x, y, top_tiles) {
-        top_tiles.forEach((tile) => {
+    function topTile(value, x, y, top_tiles, upper, passable) {
+        for (let i = 0; i < top_tiles.length; i++) {
+            const tile = top_tiles[i];
             if (tile[1] < value && value <= tile[2]) {
+                if (upper && tile[3] >= 1) continue;
                 setTileId(x, y, tile[3], tile[0]);
             }
-        });
+        }
     }
-    function BottomTile(value, x, y, bottom_tiles) {
-        bottom_tiles.forEach((tile) => {
+    function bottomTile(value, x, y, bottom_tiles) {
+        for (let i = 0; i < bottom_tiles.length; i++) {
+            const tile = bottom_tiles[i];
             if (tile[2] <= value && value <= tile[1]) {
                 setTileId(x, y, tile[3], tile[0]);
             }
-        });
+        }
     }
-    function createBiome(x, y, biome, seed_length) {
+    function createBiome(x, y, biome, seed_length, upper = false, passable = false) {
         // const tilesetId       = $gameMap.tilesetId();
         // const BiomeTileSets   = Biome; // JSON.parse(Biome);
         // const tile_set        = BiomeTileSets.tile_set;
         // const biome_tile_sets = BiomeTileSets.biome_tile_sets;
         // console.debug(BiomeTileSets);
-
-        const value = PotadraPerlinNoise_my_noise(x, y, seed_length, seed);
-        TopTile(value, x, y, biome.top_tile);
-        BottomTile(value, x, y, biome.bottom_tile);
+        const value = PotadraPerlinNoise_my_noise(x, y, seed_length, $gameTemp._seedArray);
+        topTile(value, x, y, biome.top_tile, upper, passable);
+        bottomTile(value, x, y, biome.bottom_tile);
     }
 
     // 船を呼び出せるマップか判定
@@ -2035,7 +2150,7 @@ https://github.com/pota-gon/GenerateWorld
         if (values) {
             for (const s of ShipTilesets) {
                 const ship_tile_set = JSON.parse(s);
-                const tile_set_id = Number(ship_tile_set.tile_set_id);
+                const tile_set_id   = Number(ship_tile_set.tile_set_id);
                 if ($gameMap.tilesetId() === tile_set_id) {
                     const boat_tile_ids    = Potadra_numberArray(ship_tile_set.boat_tile_ids);
                     const ship_tile_ids    = Potadra_numberArray(ship_tile_set.ship_tile_ids);
@@ -2047,13 +2162,13 @@ https://github.com/pota-gon/GenerateWorld
     }
     function callVehicle(player, values, tile_ids) {
         const direction = PotadraShip_directionXY();
-        const x = PotadraLoop_roundX(player.x, direction.x);
-        const y = PotadraLoop_roundY(player.y, direction.y);
-        const tileId = edgeTileId(x, y, 0);
+        const x         = PotadraLoop_roundX(player.x, direction.x);
+        const y         = PotadraLoop_roundY(player.y, direction.y);
+        const tileId    = edgeTileId(x, y, 0);
         if (!$gamePlayer.isCollidedWithEvents(x, y)) {
-            if (PotadraShip_checkShip(values[0], tileId, tile_ids[0])) {
+            if (PotadraShip_checkShip(values[0], tileId, tile_ids[0]) && $gameMap.isBoatPassable(x, y)) {
                 $gameMap.boat().setLocation($gameMap.mapId(), x, y);
-            } else if (PotadraShip_checkShip(values[1], tileId, tile_ids[1])) {
+            } else if (PotadraShip_checkShip(values[1], tileId, tile_ids[1]) && $gameMap.isShipPassable(x, y)) {
                 $gameMap.ship().setLocation($gameMap.mapId(), x, y);
             } else if (PotadraShip_checkShip(values[2], tileId, tile_ids[2])) {
                 $gameMap.airship().setLocation($gameMap.mapId(), player.x, player.y);
@@ -2109,11 +2224,9 @@ https://github.com/pota-gon/GenerateWorld
             right_x = $gameMap.roundXWithDirection(x, PotadraDirection_RIGHT());
             aroundTileIds.push(loopTileId(x, up_y, z, tileId));
             aroundTileIds.push(loopTileId(x, under_y, z, tileId));
-
             aroundTileIds.push(loopTileId(left_x, y, z, tileId));
             aroundTileIds.push(loopTileId(left_x, up_y, z, tileId));
             aroundTileIds.push(loopTileId(left_x, under_y, z, tileId));
-
             aroundTileIds.push(loopTileId(right_x, y, z, tileId));
             aroundTileIds.push(loopTileId(right_x, up_y, z, tileId));
             aroundTileIds.push(loopTileId(right_x, under_y, z, tileId));
@@ -2124,11 +2237,9 @@ https://github.com/pota-gon/GenerateWorld
             right_x = $gameMap.xWithDirection(x, PotadraDirection_RIGHT());
             aroundTileIds.push(randomTileId(x, up_y, z, tileId));
             aroundTileIds.push(randomTileId(x, under_y, z, tileId));
-
             aroundTileIds.push(randomTileId(left_x, y, z, tileId));
             aroundTileIds.push(randomTileId(left_x, up_y, z, tileId));
             aroundTileIds.push(randomTileId(left_x, under_y, z, tileId));
-
             aroundTileIds.push(randomTileId(right_x, y, z, tileId));
             aroundTileIds.push(randomTileId(right_x, up_y, z, tileId));
             aroundTileIds.push(randomTileId(right_x, under_y, z, tileId));
@@ -2160,25 +2271,21 @@ https://github.com/pota-gon/GenerateWorld
             distantTileIds.push(loopTileId(x, under_y, z, tileId));
             distantTileIds.push(loopTileId(x, distant_up_y, z, tileId));
             distantTileIds.push(loopTileId(x, distant_under_y, z, tileId));
-
             distantTileIds.push(loopTileId(left_x, y, z, tileId));
             distantTileIds.push(loopTileId(left_x, up_y, z, tileId));
             distantTileIds.push(loopTileId(left_x, under_y, z, tileId));
             distantTileIds.push(loopTileId(left_x, distant_up_y, z, tileId));
             distantTileIds.push(loopTileId(left_x, distant_under_y, z, tileId));
-
             distantTileIds.push(loopTileId(right_x, y, z, tileId));
             distantTileIds.push(loopTileId(right_x, up_y, z, tileId));
             distantTileIds.push(loopTileId(right_x, under_y, z, tileId));
             distantTileIds.push(loopTileId(right_x, distant_up_y, z, tileId));
             distantTileIds.push(loopTileId(right_x, distant_under_y, z, tileId));
-
             distantTileIds.push(loopTileId(distant_left_x, y, z, tileId));
             distantTileIds.push(loopTileId(distant_left_x, up_y, z, tileId));
             distantTileIds.push(loopTileId(distant_left_x, under_y, z, tileId));
             distantTileIds.push(loopTileId(distant_left_x, distant_up_y, z, tileId));
             distantTileIds.push(loopTileId(distant_left_x, distant_under_y, z, tileId));
-
             distantTileIds.push(loopTileId(distant_right_x, y, z, tileId));
             distantTileIds.push(loopTileId(distant_right_x, up_y, z, tileId));
             distantTileIds.push(loopTileId(distant_right_x, under_y, z, tileId));
@@ -2197,25 +2304,21 @@ https://github.com/pota-gon/GenerateWorld
             distantTileIds.push(randomTileId(x, under_y, z, tileId));
             distantTileIds.push(randomTileId(x, distant_up_y, z, tileId));
             distantTileIds.push(randomTileId(x, distant_under_y, z, tileId));
-
             distantTileIds.push(randomTileId(left_x, y, z, tileId));
             distantTileIds.push(randomTileId(left_x, up_y, z, tileId));
             distantTileIds.push(randomTileId(left_x, under_y, z, tileId));
             distantTileIds.push(randomTileId(left_x, distant_up_y, z, tileId));
             distantTileIds.push(randomTileId(left_x, distant_under_y, z, tileId));
-
             distantTileIds.push(randomTileId(right_x, y, z, tileId));
             distantTileIds.push(randomTileId(right_x, up_y, z, tileId));
             distantTileIds.push(randomTileId(right_x, under_y, z, tileId));
             distantTileIds.push(randomTileId(right_x, distant_up_y, z, tileId));
             distantTileIds.push(randomTileId(right_x, distant_under_y, z, tileId));
-
             distantTileIds.push(randomTileId(distant_left_x, y, z, tileId));
             distantTileIds.push(randomTileId(distant_left_x, up_y, z, tileId));
             distantTileIds.push(randomTileId(distant_left_x, under_y, z, tileId));
             distantTileIds.push(randomTileId(distant_left_x, distant_up_y, z, tileId));
             distantTileIds.push(randomTileId(distant_left_x, distant_under_y, z, tileId));
-
             distantTileIds.push(randomTileId(distant_right_x, y, z, tileId));
             distantTileIds.push(randomTileId(distant_right_x, up_y, z, tileId));
             distantTileIds.push(randomTileId(distant_right_x, under_y, z, tileId));
@@ -2227,9 +2330,8 @@ https://github.com/pota-gon/GenerateWorld
     }
 
     // 周囲のタイルID のチェック
-    function isAroundTile(x, y, z, tileId) {
+    /*function isAroundTile(x, y, z, tileId) {
         aroundTile(x, y, z, tileId);
-
         return Tilemap.isSameKindTile(tileId, aroundTileIds[1]) || Tilemap.isSameKindTile(tileId, aroundTileIds[2]) ||
                Tilemap.isSameKindTile(tileId, aroundTileIds[3]) || Tilemap.isSameKindTile(tileId, aroundTileIds[4]) ||
                Tilemap.isSameKindTile(tileId, aroundTileIds[5]) || Tilemap.isSameKindTile(tileId, aroundTileIds[6]) ||
@@ -2237,17 +2339,15 @@ https://github.com/pota-gon/GenerateWorld
     }
     function isAllAroundTile(x, y, z, tileId) {
         aroundTile(x, y, z, tileId);
-
         return Tilemap.isSameKindTile(tileId, aroundTileIds[1]) && Tilemap.isSameKindTile(tileId, aroundTileIds[2]) &&
                Tilemap.isSameKindTile(tileId, aroundTileIds[3]) && Tilemap.isSameKindTile(tileId, aroundTileIds[4]) &&
                Tilemap.isSameKindTile(tileId, aroundTileIds[5]) && Tilemap.isSameKindTile(tileId, aroundTileIds[6]) &&
                Tilemap.isSameKindTile(tileId, aroundTileIds[7]) && Tilemap.isSameKindTile(tileId, aroundTileIds[8]);
-    }
+    }*/
 
     // 周囲のタイル塗りつぶし
     function fillAroundTile(_x, _y, z, tileId, changeZ, changeTileId) {
         aroundTile(_x, _y, z, tileId);
-
         for (let x = 0; x <= 2; x++) {
             for (let y = 0; y <= 2; y++) {
                 if (x === 0 && y === 0) continue;
@@ -2264,7 +2364,6 @@ https://github.com/pota-gon/GenerateWorld
     //　離れたタイル塗りつぶし
     function fillDistantTile(_x, _y, z, tileId, changeZ, changeTileId) {
         distantTile(_x, _y, z, tileId);
-
         for (let x = 0; x <= 4; x++) {
             for (let y = 0; y <= 4; y++) {
                 if (x === 0 && y === 0) continue;
@@ -2302,42 +2401,34 @@ https://github.com/pota-gon/GenerateWorld
         for (let x = current_x - 1; x > min_x; x--) {
             tmp_y--;
             if (tmp_y < min_y) break;
-            if (edgeTileId(x, tmp_y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, tmp_y, z, tileID) === tileID) return true;
         }
         // 右上を調べる
         tmp_y = current_y;
         for (let x = current_x - 1; x < max_x; x++) {
             tmp_y--;
             if (tmp_y < min_y) break;
-            if (edgeTileId(x, tmp_y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, tmp_y, z, tileID) === tileID) return true;
         }
         // 左下を調べる
         tmp_y = current_y;
         for (let x = current_x + 1; x > min_x; x--) {
             tmp_y++;
             if (tmp_y > max_y) break;
-            if (edgeTileId(x, tmp_y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, tmp_y, z, tileID) === tileID) return true;
         }
         // 右下を調べる
         tmp_y = current_y;
         for (let x = current_x + 1; x < max_x; x++) {
             tmp_y++;
             if (tmp_y > max_y) break;
-            if (edgeTileId(x, tmp_y, z, tileID) === tileID) {
-                return true;
-            }
+            if (edgeTileId(x, tmp_y, z, tileID) === tileID) return true;
         }
         return false;
     }
     // 周囲の判定
     // count = 0 で、マップ最大まで判定
-    function around(current_x, current_y, z, tileID, count = 0, map_x = $dataMap.width, map_y = $dataMap.height) {
+    /*function around(current_x, current_y, z, tileID, count = 0, map_x = $dataMap.width, map_y = $dataMap.height) {
         let min_x = current_x - count;
         let min_y = current_y - count;
         let max_x = current_x + count;
@@ -2356,13 +2447,11 @@ https://github.com/pota-gon/GenerateWorld
         for (let x = min_x; x < max_x; x++) {
             for (let y = min_y; y < max_y; y++) {
                 if (x === current_x && y === current_y) continue;
-                if (edgeTileId(x, y, z, tileID) === tileID) {
-                    return true;
-                }
+                if (edgeTileId(x, y, z, tileID) === tileID) return true;
             }
         }
         return false;
-    }
+    }*/
 
     // 範囲内のタイルID取得
     function isScope(z, _min_x, _min_y, _max_x, _max_y, tileIds) {
@@ -2375,9 +2464,8 @@ https://github.com/pota-gon/GenerateWorld
             for (let x = min_x; x <= max_x; x++) {
                 if (tileIds[count] !== edgeTileId(x, y, z, 0)) {
                     return false;
-                } else {
-                    count++;
                 }
+                count++;
             }
         }
         return true;
@@ -2394,18 +2482,25 @@ https://github.com/pota-gon/GenerateWorld
                 let region;
                 if (layer2 !== 0) {
                     layer2 -= 2000;
-                    region = (layer2 / 48) + TileRegion;
+                    region = (layer2 / 48) + StartTileRegion;
                 } else {
                     let layer1 = edgeTileId(x, y, 0);
                     layer1 -= 2000;
-                    region = (layer1 / 48) + TileRegion;
+                    region = (layer1 / 48) + StartTileRegion;
                 }
 
                 autoTile(x, y, 0);
                 autoTile(x, y, 1);
                 autoTile(x, y, 2);
                 autoTile(x, y, 3);
-                setTileId(x, y, 5, region); // リージョン
+
+                if (LockTileRegion !== 0 && LockTileRegion === _Game_Map_tileId.call(this, x, y, 5)) {
+                    setTileId(x, y, 5, LockTileRegion); // タイル完全固定リージョン
+                } else if (StartTileRegion !== 0) {
+                    setTileId(x, y, 5, region); // 自動設定リージョン
+                } else {
+                    setTileId(x, y, 5); // リージョンなし
+                }
             }
         }
     }
@@ -2449,21 +2544,21 @@ https://github.com/pota-gon/GenerateWorld
         } else if (Tilemap.isWallTypeAutotile(tileID)) {
             let UpperID, LeftID, RightID, LowerID;
             if (PotadraEdge_isEdge(x, y)) {
-                UpperID      = loopTileId(x    , y - 1, z, tileID); // 上
-                LeftID       = loopTileId(x - 1, y    , z, tileID); // 左
-                RightID      = loopTileId(x + 1, y    , z, tileID); // 右
-                LowerID      = loopTileId(x    , y + 1, z, tileID); // 下
+                UpperID = loopTileId(x    , y - 1, z, tileID); // 上
+                LeftID  = loopTileId(x - 1, y    , z, tileID); // 左
+                RightID = loopTileId(x + 1, y    , z, tileID); // 右
+                LowerID = loopTileId(x    , y + 1, z, tileID); // 下
             } else {
-                UpperID      = randomTileId(x    , y - 1, z); // 上
-                LeftID       = randomTileId(x - 1, y    , z); // 左
-                RightID      = randomTileId(x + 1, y    , z); // 右
-                LowerID      = randomTileId(x    , y + 1, z); // 下
+                UpperID = randomTileId(x    , y - 1, z); // 上
+                LeftID  = randomTileId(x - 1, y    , z); // 左
+                RightID = randomTileId(x + 1, y    , z); // 右
+                LowerID = randomTileId(x    , y + 1, z); // 下
             }
             const upper_left  = PotadraAutoTile_WallUpperLeft(tileID, UpperID, LeftID);
             const upper_right = PotadraAutoTile_WallUpperRight(tileID, UpperID, RightID);
             const lower_left  = PotadraAutoTile_WallLowerLeft(tileID, LowerID, LeftID);
             const lower_right = PotadraAutoTile_WallLowerRight(tileID, LowerID, RightID);
-            const shape = PotadraAutoTile_WALL_AUTOTILE_TABLE()[upper_left + upper_right + lower_left + lower_right] || 0;
+            const shape       = PotadraAutoTile_WALL_AUTOTILE_TABLE()[upper_left + upper_right + lower_left + lower_right] || 0;
             setTileId(x, y, z, tileID + shape);
         } else if (Tilemap.isWaterfallTypeAutotile(tileID)) {
             let tileID1, tileID2;
@@ -2575,7 +2670,7 @@ https://github.com/pota-gon/GenerateWorld
          * コマンド［マップJSON出力］
          */
         Scene_Menu.prototype.export_map_json = function() {
-            JsonExport(SameMapExportJson);
+            JsonExport(SameMapExportJson, ExportOrgRegion);
             SceneManager.goto(Scene_Map);
         };
     }
@@ -2583,7 +2678,7 @@ https://github.com/pota-gon/GenerateWorld
     //==============================================================================
     // マップJSON出力
     //==============================================================================
-    function JsonExport(same_map_export_json, event_export = EventExport, backup_json = BackupJson) {
+    function JsonExport(same_map_export_json, export_org_region, event_export = EventExport, backup_json = BackupJson) {
         if (StorageManager.isLocalMode()) {
             const exportDirPath = Potadra_getDirPath('data');
             const backupDirPath = Potadra_getDirPath(backUpPathText);
@@ -2660,29 +2755,17 @@ https://github.com/pota-gon/GenerateWorld
             for (let item in $dataMap) {
                 if (item === 'data') {
                     if (isGenerateWorld()) {
-                        let tmp_potadra_worlds;
-                        let potadra_worlds;
-                        if (RetentionSaveData) {
-                            tmp_potadra_worlds = $gameMap._potadra_worlds;
-                        } else {
-                            tmp_potadra_worlds = $gameTemp._potadra_worlds;
-                        }
-
-                        if (same_map_export_json) { // 同一マップに出力
+                        const tmp_potadra_worlds = RetentionSaveData ? $gameMap._potadra_worlds : $gameTemp._potadra_worlds;
+                        if (same_map_export_json || export_org_region) { // 同一マップに出力 OR 元リージョン出力
                             for (let x = 0; x < $dataMap.width; x++) {
                                 for (let y = 0; y < $dataMap.height; y++) {
                                     const region = orgTileId(x, y, 5);
-                                    const index = PotadraGenerate_index(x, y, 5);
+                                    const index  = PotadraGenerate_index(x, y, 5);
                                     tmp_potadra_worlds[index] = region;
                                 }
                             }
                         }
-
-                        if (RetentionSaveData) {
-                            tmp = '\n"data":' + JSON.stringify($gameMap._potadra_worlds);
-                        } else {
-                            tmp = '\n"data":' + JSON.stringify($gameTemp._potadra_worlds);
-                        }
+                        tmp = '\n"data":' + JSON.stringify(tmp_potadra_worlds);
                     } else {
                         tmp = '\n"data":' + JSON.stringify($dataMap.data);
                     }
@@ -2711,40 +2794,32 @@ https://github.com/pota-gon/GenerateWorld
     // コマンドキー
     //==============================================================================
     if (CommandKey && Potadra_isTest()) {
-        let regenerate_code, export_json_code, output_json_code;
-        if (RegenerateKey) {
-            regenerate_code = Potadra_keyCode(RegenerateKey);
-            if (regenerate_code) {
-                Input.keyMapper[regenerate_code] = RegenerateKey;
-            } else {
-                console.warn('ワールド再生成のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
-            }
-        }
-        if (ExportJsonKey) {
-            export_json_code = Potadra_keyCode(ExportJsonKey);
-            if (export_json_code) {
-                Input.keyMapper[export_json_code] = ExportJsonKey;
-            } else {
-                console.warn('マップJSON出力(イベントあり)のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
-            }
-        }
-        if (OutputJsonKey) {
-            output_json_code = Potadra_keyCode(OutputJsonKey);
-            if (output_json_code) {
-                Input.keyMapper[output_json_code] = OutputJsonKey;
-            } else {
-                console.warn('マップJSON出力(イベントなし)のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
-            }
-        }
+        const regenerate_code  = SetKey(RegenerateKey, 'ワールド再生成のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
+        const export_json_code = SetKey(ExportJsonKey, 'マップJSON出力(イベントあり)のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
+        const output_json_code = SetKey(OutputJsonKey, 'マップJSON出力(イベントなし)のキーが競合しています。この機能を使う場合はプラグインパラメータから他のキーを指定してください。');
 
         const _Game_Player_triggerButtonAction = Game_Player.prototype.triggerButtonAction;
         Game_Player.prototype.triggerButtonAction = function() {
             const value = _Game_Player_triggerButtonAction.apply(this, arguments);
             if (regenerate_code && Input.isTriggered(RegenerateKey)) RegenerateWorld();
-            if (export_json_code && Input.isTriggered(ExportJsonKey)) JsonExport(SameMapExportJson, true);
-            if (output_json_code && Input.isTriggered(OutputJsonKey)) JsonExport(SameMapExportJson, false);
+            if (export_json_code && Input.isTriggered(ExportJsonKey)) JsonExport(SameMapExportJson, ExportOrgRegion, true);
+            if (output_json_code && Input.isTriggered(OutputJsonKey)) JsonExport(SameMapExportJson, ExportOrgRegion, false);
             return value;
         };
+    }
+
+    // コマンドキー設定
+    function SetKey(key, message) {
+        if (key) {
+            const code = Potadra_keyCode(key);
+            if (code) {
+                Input.keyMapper[code] = key;
+                return code;
+            } else {
+                console.warn(message);
+            }
+        }
+        return false;
     }
 
     //==============================================================================
